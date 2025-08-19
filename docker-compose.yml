@@ -1,0 +1,50 @@
+services:
+  webhook-app:
+    build: .
+    image: webhook-app:dev
+    env_file:
+      - .env
+    command: ["uv", "run", "uvicorn", "src.webhook_api:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,urllib.parse,socket; u=urllib.parse.urlparse(os.getenv('WEBHOOK_URL','')); sys.exit(1) if not u.scheme or not u.hostname else (socket.create_connection((u.hostname,443),3).close() or sys.exit(0))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    ports:
+      - "8000:8000"
+  
+  webhook-ping:
+    build: .
+    image: webhook-ping:dev
+    env_file:
+      - .env
+    command: ["uv", "run", "src/app.py"]
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,urllib.parse,socket; u=urllib.parse.urlparse(os.getenv('WEBHOOK_URL','')); sys.exit(1) if not u.scheme or not u.hostname else (socket.create_connection((u.hostname,443),3).close() or sys.exit(0))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"                          # optional: GUI access from host
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  db_data: {}
