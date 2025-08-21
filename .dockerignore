@@ -1,7 +1,5 @@
 .git
 .env
 .env.*
-dist
-build
 __pycache__
 *.pyc
