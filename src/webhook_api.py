@@ -14,7 +14,7 @@ import psycopg
 
 from src.analytics import log_event
 
-from .db_client import fetch_recent_loads, find_closest_by_weight, search_loads
+from .db_client import fetch_negotiations_by_session, fetch_recent_loads, find_closest_by_weight, insert_negotiation, search_loads
 
 class Timer:
     def __enter__(self):
@@ -246,7 +246,7 @@ async def negotiate_start(request: Request, authorization: Optional[str] = Heade
     body = await request.json()
     session_id = body.get("session_id")
     if not session_id:
-        raise HTTPException(status_code=400, detail="Missing session_id")
+        session_id = str(uuid.uuid4())
     print(f"Session ID is {session_id}")
     # set defaults
     entry = SESS.setdefault(session_id, {
@@ -266,7 +266,10 @@ async def negotiate_start(request: Request, authorization: Optional[str] = Heade
     entry["last_update"] = datetime.datetime.now().isoformat()
     entry["request"] = body
     print(f"lloads is {body.get("load")}")
-    # make the request ot send to Happy robot
+    print(f"Cur round is {body.get("cur_round")}")
+    print(f"Max rounds is {body.get("max_rounds")}")
+    
+    # make the request ot send to Happy robot negotiation workflow endpoint
     # SESS: Dict[str, Dict[str, Any]] = {}
     forward_body = {
         "event": "negotiate",
@@ -291,6 +294,30 @@ async def negotiate_start(request: Request, authorization: Optional[str] = Heade
         await client.post(NEGOTIATION_WEBHOOK_URL, json=forward_body, headers=headers)
 
     return {"ok": True, "session_id": session_id, "status": "negotiation started"}
+
+@app.post("/negotiate/start/v2")
+async def negotiate_start_v2_db(request: Request, authorization: Optional[str] = Header(None)):
+    if INCOMING_TOKEN and authorization != f"Bearer {INCOMING_TOKEN}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body = await request.json()
+    session_id = body.get("session_id") or str(uuid.uuid4())
+    body["session_id"] = session_id  # ensure always present
+
+    # Insert into DB
+    try:
+        row_id = insert_negotiation(body)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
+
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "db_id": row_id,
+        "cur_round": body.get("cur_round"),
+        "max_rounds": body.get("max_rounds"),
+        "status": "stored"
+    }
 
 
 @app.post("/negotiate/result")
@@ -355,6 +382,16 @@ async def get_negotiation_result(session_id: str):
             "status": entry.get("status", "unknown"),
             "result": entry.get("result")}
 
+@app.get("/negotiate/history/{session_id}")
+async def get_negotiation_history(session_id: str, authorization: Optional[str] = Header(None)):
+    if INCOMING_TOKEN and authorization != f"Bearer {INCOMING_TOKEN}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        rows = fetch_negotiations_by_session(session_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB fetch failed: {e}")
+
+    return {"ok": True, "session_id": session_id, "history": rows}
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(limit: int = Query(20, ge=1, le=100)):
@@ -404,6 +441,75 @@ def dashboard(limit: int = Query(20, ge=1, le=100)):
             <td>{r[5] or ''}</td>
             <td>{r[6] or ''}</td>
             <td><pre>{r[7] or ''}</pre></td>
+        </tr>
+        """
+
+    html += "</table></body></html>"
+    return HTMLResponse(content=html)
+
+from fastapi.responses import HTMLResponse
+@app.get("/negotiations_dashboard", response_class=HTMLResponse)
+def negotiations_dashboard(limit: int = Query(50, ge=1, le=500)):
+    DATABASE_URL = os.getenv("DATABASE_URL")
+    if not DATABASE_URL:
+        raise HTTPException(500, "No database URL found")
+       
+    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, ts, session_id, load_id, miles, loadboard_rate,
+                       price, user_message, user_requested_price,
+                       cur_round, max_rounds,
+                       ai_negotiated_price, ai_negotiated_reason, history, sentiment
+                FROM negotiations
+                ORDER BY ts DESC
+                LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+
+    # Build HTML
+    html = """
+    <html>
+    <head>
+        <title>Negotiations Dashboard</title>
+        <style>
+            body { font-family: sans-serif; margin: 20px; }
+            table { border-collapse: collapse; width: 100%; font-size: 13px; }
+            th, td { border: 1px solid #ccc; padding: 6px 10px; vertical-align: top; }
+            th { background: #eee; }
+            pre { margin: 0; white-space: pre-wrap; }
+            details { margin: 0; }
+        </style>
+    </head>
+    <body>
+        <h1>Negotiations Dashboard</h1>
+        <table>
+            <tr>
+                <th>ID</th><th>Timestamp</th><th>Session</th><th>Load</th>
+                <th>Miles</th><th>Loadboard Rate</th><th>User Msg</th><th>User Price</th>
+                <th>Round</th><th>Max Rounds</th>
+                <th>AI Price</th><th>AI Reason</th><th>History</th><th>Sentiment</th>
+            </tr>
+    """
+
+    for r in rows:
+    
+        html += f"""
+        <tr>
+            <td>{r[0]}</td>
+            <td>{r[1]}</td>
+            <td>{r[2]}</td>
+            <td>{r[3]}</td>
+            <td>{r[4] or ''}</td>
+            <td>{r[5] or ''}</td>
+            <td><pre>{r[7] or ''}</pre></td>
+            <td>{r[8] or ''}</td>
+            <td>{r[9]}</td>
+            <td>{r[10]}</td>
+            <td>{r[11] or ''}</td>
+            <td><pre>{r[12] or ''}</pre></td>
+            <td>{r[13]}</td>
+            <td>{r[14] or ''}</td>
         </tr>
         """
 

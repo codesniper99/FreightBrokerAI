@@ -240,6 +240,10 @@ export default function App() {
         )}
       </section>
 
+
+
+      
+
       {/* Step 2 - Message */}
       {verifyResp?.eligible && step >= 1 && (
         <section className="mb-8" ref={messageRef}>

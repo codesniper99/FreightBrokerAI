@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import json
 import os
 from typing import Any, Dict, List, Optional
 import psycopg
@@ -125,3 +126,55 @@ def search_loads(
     except Exception:
         # fail-soft so your webhook still responds
         return []
+    
+def insert_negotiation(entry: Dict[str, Any]) -> int:
+    sql = """
+        INSERT INTO negotiations
+        (session_id, load_id, miles, loadboard_rate,
+         price, user_message, user_requested_price,
+         cur_round, max_rounds,
+         ai_negotiated_price, ai_negotiated_reason, history, ts, sentiment)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, NOW(), %s)
+        RETURNING id
+    """
+    params = (
+        entry.get("session_id"),
+        entry.get("load", {}).get("load_id"),
+        entry.get("load", {}).get("miles"),
+        entry.get("load", {}).get("loadboard_rate"),
+        entry.get("load", {}).get("price"),
+        entry.get("user_message"),
+        entry.get("user_requested_price"),
+        entry.get("cur_round"),
+        entry.get("max_rounds"),
+        entry.get("ai_negotiated_price"),
+        entry.get("ai_negotiated_reason"),
+        entry.get("history"),
+        entry.get("sentiment"),
+    )
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        row = cur.fetchone()
+        while row is not None:
+            row_id = row[0]
+            return row_id
+    return -1  # should not reach here
+
+    
+
+
+def fetch_negotiations_by_session(session_id: str) -> List[Dict[str, Any]]:
+    """
+    Fetch all negotiations for a given session_id.
+    """
+    sql = """
+        SELECT id, session_id, load_id, price, miles, user_message,
+               user_requested_price, cur_round, max_rounds,
+               ai_negotiated_price, ai_negotiated_reason, ts
+        FROM negotiations
+        WHERE session_id = %s
+        ORDER BY ts ASC
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (session_id,))
+        return _rows_to_dicts(cur)
